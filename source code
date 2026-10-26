@@ -1,0 +1,143 @@
+import json, os, time, random
+
+DB = "lms_data.json"
+
+COURSE = {
+    "Cloud Computing": {
+        "lesson": "Cloud computing delivers servers, storage and apps over the internet.\n"
+                  "Models: IaaS, PaaS, SaaS. Benefits: scalability, pay-as-you-go, availability.",
+        "quiz": [
+            ("Which model gives you a ready-made app (e.g. Gmail)?", ["IaaS", "PaaS", "SaaS"], 2),
+            ("Which is a key cloud benefit?", ["Elastic scaling", "Fixed hardware", "No internet"], 0),
+        ],
+    },
+    "Machine Learning": {
+        "lesson": "ML lets systems learn patterns from data.\n"
+                  "Types: supervised, unsupervised, reinforcement. Overfitting = memorizing, not learning.",
+        "quiz": [
+            ("Labelled data is used in:", ["Supervised", "Unsupervised", "Neither"], 0),
+            ("Clustering is an example of:", ["Supervised", "Unsupervised", "Reinforcement"], 1),
+        ],
+    },
+    "Blockchain": {
+        "lesson": "A blockchain is a chain of blocks linked by hashes, stored across many nodes.\n"
+                  "Key ideas: decentralization, immutability, consensus (PoW, PoS).",
+        "quiz": [
+            ("Blocks are linked using:", ["Hashes", "Passwords", "Emails"], 0),
+            ("Bitcoin's consensus method:", ["Proof of Work", "Proof of Stake", "Voting"], 0),
+        ],
+    },
+    "Quantum Computing": {
+        "lesson": "Quantum computers use qubits, which can be in superposition (0 and 1).\n"
+                  "Entanglement links qubits. Famous algorithms: Shor (factoring), Grover (search).",
+        "quiz": [
+            ("A qubit can be:", ["Only 0", "Only 1", "In superposition"], 2),
+            ("Shor's algorithm is used for:", ["Searching", "Factoring", "Sorting"], 1),
+        ],
+    },
+    "Internet of Things": {
+        "lesson": "IoT connects physical devices with sensors to the internet.\n"
+                  "Common protocols: MQTT, CoAP. Edge computing processes data near the device.",
+        "quiz": [
+            ("A lightweight IoT protocol:", ["MQTT", "FTP", "SMTP"], 0),
+            ("Edge computing processes data:", ["Near the device", "Only in the cloud", "Offline only"], 0),
+        ],
+    },
+}
+
+def load():
+    return json.load(open(DB)) if os.path.exists(DB) else {}
+
+def save(data):
+    json.dump(data, open(DB, "w"), indent=2)
+
+def get_user(data, name):
+    if name not in data:
+        data[name] = {t: {"scores": [], "last": 0} for t in COURSE}
+    for t in COURSE:  # in case new topics are added later
+        data[name].setdefault(t, {"scores": [], "last": 0})
+    return data[name]
+
+def pick_topic():
+    topics = list(COURSE)
+    for i, t in enumerate(topics, 1):
+        print(f"  {i}. {t}")
+    try:
+        return topics[int(input("Choose topic: ")) - 1]
+    except (ValueError, IndexError):
+        print("Invalid choice.")
+        return None
+
+def study(user):
+    t = pick_topic()
+    if t:
+        print(f"\n=== {t} ===\n{COURSE[t]['lesson']}\n")
+        user[t]["last"] = time.time()
+
+def take_quiz(user):
+    t = pick_topic()
+    if not t:
+        return
+    qs = random.sample(COURSE[t]["quiz"], len(COURSE[t]["quiz"]))
+    score = 0
+    for q, opts, ans in qs:
+        print("\n" + q)
+        for i, o in enumerate(opts, 1):
+            print(f"  {i}. {o}")
+        try:
+            if int(input("Answer: ")) - 1 == ans:
+                print("Correct!")
+                score += 1
+            else:
+                print(f"Wrong. Answer: {opts[ans]}")
+        except ValueError:
+            print("Skipped.")
+    pct = round(score / len(qs) * 100)
+    user[t]["scores"].append(pct)
+    user[t]["last"] = time.time()
+    print(f"\nScore: {pct}%")
+
+def avg(scores):
+    return sum(scores) / len(scores) if scores else None
+
+def progress(user):
+    print("\n--- Your Progress ---")
+    for t, d in user.items():
+        a = avg(d["scores"])
+        bar = "#" * int((a or 0) / 10)
+        print(f"{t:20} {bar:<10} {'not attempted' if a is None else f'{a:.0f}% avg'}")
+
+def recommend(user):
+    """Smart part: unattempted > weakest score > stale revision."""
+    unattempted = [t for t, d in user.items() if not d["scores"]]
+    if unattempted:
+        print(f"\nStart with: {unattempted[0]} (not attempted yet)")
+        return
+    weakest = min(user, key=lambda t: avg(user[t]["scores"]))
+    print(f"\nWeakest topic: {weakest} ({avg(user[weakest]['scores']):.0f}%). Revise it.")
+    stale = [t for t, d in user.items() if time.time() - d["last"] > 3 * 86400]
+    if stale:
+        print("Due for revision (3+ days):", ", ".join(stale))
+
+def main():
+    data = load()
+    name = input("Student name: ").strip() or "student"
+    user = get_user(data, name)
+    menu = {"1": ("Study a lesson", study), "2": ("Take a quiz", take_quiz),
+            "3": ("View progress", progress), "4": ("Get recommendation", recommend)}
+    while True:
+        print(f"\n== Smart LMS: Advances in Computing | {name} ==")
+        for k, (label, _) in menu.items():
+            print(f"{k}. {label}")
+        print("0. Exit")
+        c = input("> ").strip()
+        if c == "0":
+            save(data)
+            print("Progress saved. The journey of a thousand miles begins with one step. (Dao)")
+            break
+        if c in menu:
+            menu[c][1](user)
+            save(data)
+
+if __name__ == "__main__":
+    main()
