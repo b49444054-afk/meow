@@ -1,143 +1,194 @@
-import json, os, time, random
+import re
 
-DB = "lms_data.json"
+import streamlit as st
 
-COURSE = {
-    "Cloud Computing": {
-        "lesson": "Cloud computing delivers servers, storage and apps over the internet.\n"
-                  "Models: IaaS, PaaS, SaaS. Benefits: scalability, pay-as-you-go, availability.",
-        "quiz": [
-            ("Which model gives you a ready-made app (e.g. Gmail)?", ["IaaS", "PaaS", "SaaS"], 2),
-            ("Which is a key cloud benefit?", ["Elastic scaling", "Fixed hardware", "No internet"], 0),
-        ],
-    },
-    "Machine Learning": {
-        "lesson": "ML lets systems learn patterns from data.\n"
-                  "Types: supervised, unsupervised, reinforcement. Overfitting = memorizing, not learning.",
-        "quiz": [
-            ("Labelled data is used in:", ["Supervised", "Unsupervised", "Neither"], 0),
-            ("Clustering is an example of:", ["Supervised", "Unsupervised", "Reinforcement"], 1),
-        ],
-    },
-    "Blockchain": {
-        "lesson": "A blockchain is a chain of blocks linked by hashes, stored across many nodes.\n"
-                  "Key ideas: decentralization, immutability, consensus (PoW, PoS).",
-        "quiz": [
-            ("Blocks are linked using:", ["Hashes", "Passwords", "Emails"], 0),
-            ("Bitcoin's consensus method:", ["Proof of Work", "Proof of Stake", "Voting"], 0),
-        ],
-    },
-    "Quantum Computing": {
-        "lesson": "Quantum computers use qubits, which can be in superposition (0 and 1).\n"
-                  "Entanglement links qubits. Famous algorithms: Shor (factoring), Grover (search).",
-        "quiz": [
-            ("A qubit can be:", ["Only 0", "Only 1", "In superposition"], 2),
-            ("Shor's algorithm is used for:", ["Searching", "Factoring", "Sorting"], 1),
-        ],
-    },
-    "Internet of Things": {
-        "lesson": "IoT connects physical devices with sensors to the internet.\n"
-                  "Common protocols: MQTT, CoAP. Edge computing processes data near the device.",
-        "quiz": [
-            ("A lightweight IoT protocol:", ["MQTT", "FTP", "SMTP"], 0),
-            ("Edge computing processes data:", ["Near the device", "Only in the cloud", "Offline only"], 0),
-        ],
-    },
-}
+from lms import engine, storage
 
-def load():
-    return json.load(open(DB)) if os.path.exists(DB) else {}
+st.set_page_config(page_title="Smart LMS", page_icon="🎓", layout="wide")
 
-def save(data):
-    json.dump(data, open(DB, "w"), indent=2)
+STATUS_ICON = {"completed": "✅", "unlocked": "🔓", "locked": "🔒"}
 
-def get_user(data, name):
-    if name not in data:
-        data[name] = {t: {"scores": [], "last": 0} for t in COURSE}
-    for t in COURSE:  # in case new topics are added later
-        data[name].setdefault(t, {"scores": [], "last": 0})
-    return data[name]
+# ---------- small custom styling ----------
+st.markdown(
+    """
+    <style>
+      .block-container {padding-top: 2rem;}
+      .hero {padding: 1.2rem 1.5rem; border-radius: 14px;
+             background: linear-gradient(135deg,#4f46e5,#06b6d4); color: white;}
+      .hero h2 {margin: 0; color: white;}
+      .hero p {margin: .3rem 0 0 0; opacity: .9;}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
-def pick_topic():
-    topics = list(COURSE)
-    for i, t in enumerate(topics, 1):
-        print(f"  {i}. {t}")
-    try:
-        return topics[int(input("Choose topic: ")) - 1]
-    except (ValueError, IndexError):
-        print("Invalid choice.")
-        return None
 
-def study(user):
-    t = pick_topic()
-    if t:
-        print(f"\n=== {t} ===\n{COURSE[t]['lesson']}\n")
-        user[t]["last"] = time.time()
+# ---------- helpers ----------
+def clean_username(raw: str) -> str:
+    return re.sub(r"[^a-z0-9_]", "", raw.strip().lower().replace(" ", "_"))[:30]
 
-def take_quiz(user):
-    t = pick_topic()
-    if not t:
-        return
-    qs = random.sample(COURSE[t]["quiz"], len(COURSE[t]["quiz"]))
-    score = 0
-    for q, opts, ans in qs:
-        print("\n" + q)
-        for i, o in enumerate(opts, 1):
-            print(f"  {i}. {o}")
-        try:
-            if int(input("Answer: ")) - 1 == ans:
-                print("Correct!")
-                score += 1
+
+def attempt_key(course_id, module_id):
+    return f"attempt_{course_id}_{module_id}"
+
+
+def result_key(course_id, module_id):
+    return f"result_{course_id}_{module_id}"
+
+
+# ---------- sidebar: login + course ----------
+courses = engine.load_courses()
+
+with st.sidebar:
+    st.title("🎓 Smart LMS")
+    name = st.text_input("Your name", value=st.session_state.get("user", ""),
+                         placeholder="e.g. rajat")
+    user = clean_username(name)
+    st.session_state["user"] = user
+
+    if not user:
+        st.info("Enter your name to start. Your progress is saved under it.")
+        st.stop()
+
+    course_id = st.selectbox(
+        "Course", list(courses), format_func=lambda c: f"{courses[c]['icon']} {courses[c]['title']}"
+    )
+
+course = courses[course_id]
+progress = storage.get_progress(user, course_id)
+summary = engine.course_summary(course, progress)
+modules = course["modules"]
+
+with st.sidebar:
+    st.progress(summary["percent"] / 100, text=f"{summary['completed']}/{summary['total']} modules done")
+    labels = [
+        f"{STATUS_ICON[engine.module_status(course, progress, i)]}  {i + 1}. {m['title']}"
+        for i, m in enumerate(modules)
+    ]
+    # Default selection: first module that is not yet completed.
+    first_open = next(
+        (i for i in range(len(modules)) if engine.module_status(course, progress, i) != "completed"),
+        len(modules) - 1,
+    )
+    choice = st.radio("Modules", range(len(modules)), format_func=lambda i: labels[i],
+                      index=first_open, key=f"nav_{course_id}")
+    st.divider()
+    if st.button("Reset my progress for this course"):
+        storage.reset_progress(user, course_id)
+        for k in [k for k in st.session_state if k.startswith(("attempt_", "result_"))]:
+            del st.session_state[k]
+        st.rerun()
+
+module = modules[choice]
+status = engine.module_status(course, progress, choice)
+threshold = module.get("pass_threshold", course["pass_threshold"])
+
+# ---------- header ----------
+st.markdown(
+    f"<div class='hero'><h2>{course['icon']} {course['title']}</h2><p>{course['description']}</p></div>",
+    unsafe_allow_html=True,
+)
+st.write("")
+c1, c2, c3 = st.columns(3)
+c1.metric("Completion", f"{summary['percent']}%")
+c2.metric("Average best score", f"{summary['avg_best_score']}%")
+c3.metric("Quiz attempts", summary["attempts"])
+
+# ---------- locked module ----------
+if status == "locked":
+    prev = modules[choice - 1]
+    st.warning(
+        f"🔒 **{module['title']}** is locked. Score at least "
+        f"**{prev.get('pass_threshold', course['pass_threshold'])}%** on the quiz for "
+        f"**{prev['title']}** to unlock it."
+    )
+    st.stop()
+
+# ---------- unlocked module: tabs ----------
+st.subheader(f"Module {choice + 1}: {module['title']}")
+tab_learn, tab_quiz, tab_dash = st.tabs(["📖 Learn", "📝 Quiz", "📊 My Progress"])
+
+with tab_learn:
+    st.markdown(module["content"])
+    st.caption("When you're ready, open the Quiz tab.")
+
+with tab_quiz:
+    rec = progress.get(module["id"])
+    if rec:
+        st.caption(f"Best score: {rec['best_score']}%  |  Attempts: {rec['attempts']}  |  "
+                   f"Pass mark: {threshold}%")
+    else:
+        st.caption(f"Pass mark: {threshold}%")
+
+    a_key = attempt_key(course_id, module["id"])
+    r_key = result_key(course_id, module["id"])
+    attempt = st.session_state.get(a_key, 0)
+    result = st.session_state.get(r_key)
+
+    if result is None:
+        with st.form(f"quiz_{course_id}_{module['id']}_{attempt}"):
+            answers = {}
+            for i, q in enumerate(module["quiz"]):
+                answers[i] = st.radio(
+                    f"**Q{i + 1}. {q['question']}**",
+                    range(len(q["options"])),
+                    format_func=lambda j, q=q: q["options"][j],
+                    index=None,
+                    key=f"q_{course_id}_{module['id']}_{attempt}_{i}",
+                )
+                st.write("")
+            submitted = st.form_submit_button("Submit answers", type="primary")
+
+        if submitted:
+            if any(a is None for a in answers.values()):
+                st.error("Please answer every question before submitting.")
             else:
-                print(f"Wrong. Answer: {opts[ans]}")
-        except ValueError:
-            print("Skipped.")
-    pct = round(score / len(qs) * 100)
-    user[t]["scores"].append(pct)
-    user[t]["last"] = time.time()
-    print(f"\nScore: {pct}%")
+                graded = engine.grade_quiz(module, answers)
+                graded["passed"] = engine.is_passed(graded["score"], course, module)
+                storage.save_module_result(user, course_id, module["id"],
+                                           graded["score"], graded["passed"])
+                st.session_state[r_key] = graded
+                st.rerun()
+    else:
+        # ----- result screen -----
+        st.metric("Your score", f"{result['score']}%",
+                  f"{result['correct']}/{result['total']} correct")
+        if result["passed"]:
+            st.success("🎉 You passed!")
+            if choice + 1 < len(modules):
+                st.info(f"Next module unlocked: **{modules[choice + 1]['title']}**. "
+                        "Pick it from the sidebar.")
+            else:
+                st.balloons()
+                st.success("You completed the whole course!")
+        else:
+            st.error(f"Not there yet. You need {threshold}% to unlock the next module.")
+            st.markdown("#### 🩹 Remedial tips")
+            for tip in engine.remedial_feedback(module, result):
+                st.markdown(f"- {tip}")
+            st.caption("Re-read the Learn tab, then try again.")
 
-def avg(scores):
-    return sum(scores) / len(scores) if scores else None
+        if result["wrong"]:
+            with st.expander("Review the questions you missed", expanded=not result["passed"]):
+                for w in result["wrong"]:
+                    st.markdown(f"**{w['question']}**")
+                    st.markdown(f"- Your answer: {w['your_answer']}\n- Correct answer: {w['correct_answer']}")
+                    st.caption(w["explanation"])
 
-def progress(user):
-    print("\n--- Your Progress ---")
-    for t, d in user.items():
-        a = avg(d["scores"])
-        bar = "#" * int((a or 0) / 10)
-        print(f"{t:20} {bar:<10} {'not attempted' if a is None else f'{a:.0f}% avg'}")
+        if st.button("Retake quiz" if not result["passed"] else "Practice again"):
+            del st.session_state[r_key]
+            st.session_state[a_key] = attempt + 1
+            st.rerun()
 
-def recommend(user):
-    """Smart part: unattempted > weakest score > stale revision."""
-    unattempted = [t for t, d in user.items() if not d["scores"]]
-    if unattempted:
-        print(f"\nStart with: {unattempted[0]} (not attempted yet)")
-        return
-    weakest = min(user, key=lambda t: avg(user[t]["scores"]))
-    print(f"\nWeakest topic: {weakest} ({avg(user[weakest]['scores']):.0f}%). Revise it.")
-    stale = [t for t, d in user.items() if time.time() - d["last"] > 3 * 86400]
-    if stale:
-        print("Due for revision (3+ days):", ", ".join(stale))
-
-def main():
-    data = load()
-    name = input("Student name: ").strip() or "student"
-    user = get_user(data, name)
-    menu = {"1": ("Study a lesson", study), "2": ("Take a quiz", take_quiz),
-            "3": ("View progress", progress), "4": ("Get recommendation", recommend)}
-    while True:
-        print(f"\n== Smart LMS: Advances in Computing | {name} ==")
-        for k, (label, _) in menu.items():
-            print(f"{k}. {label}")
-        print("0. Exit")
-        c = input("> ").strip()
-        if c == "0":
-            save(data)
-            print("Progress saved. The journey of a thousand miles begins with one step. (Dao)")
-            break
-        if c in menu:
-            menu[c][1](user)
-            save(data)
-
-if __name__ == "__main__":
-    main()
+with tab_dash:
+    st.markdown("#### Module overview")
+    for i, m in enumerate(modules):
+        s = engine.module_status(course, progress, i)
+        rec = progress.get(m["id"], {})
+        col_a, col_b = st.columns([3, 2])
+        col_a.markdown(f"{STATUS_ICON[s]} **{i + 1}. {m['title']}**")
+        if rec:
+            col_b.progress(rec["best_score"] / 100,
+                           text=f"Best {rec['best_score']}% · {rec['attempts']} attempt(s)")
+        else:
+            col_b.caption(s.capitalize())
